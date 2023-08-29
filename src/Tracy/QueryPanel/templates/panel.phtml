@@ -4,6 +4,7 @@
 /** @var object[] $queries */
 /** @var int $queriesNum */
 /** @var float $totalTime */
+/** @var string $connectionName */
 
 use Nettrine\DBAL\Utils\QueryUtils;
 use Tracy\Dumper;
@@ -31,9 +32,11 @@ use Tracy\Helpers;
 </style>
 
 <?php if ($queriesNum === 0): ?>
-	<h1>No queries</h1>
+	<h1>Connection: <?= $connectionName ?>, no queries</h1>
 <?php else: ?>
-	<h1>Queries:
+	<h1>
+        Connection: <?= $connectionName ?>,
+        queries:
 		<?= $queriesNum ?>,
 		time:
 		<?= $totalTime ? sprintf('%0.3f', $totalTime * 1000) : ''; ?> ms

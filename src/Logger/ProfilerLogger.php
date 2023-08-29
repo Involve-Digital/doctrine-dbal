@@ -12,15 +12,24 @@ class ProfilerLogger extends AbstractLogger
 	/** @var Connection */
 	protected $connection;
 
-	public function __construct(Connection $connection)
+    /** @var string */
+    protected $connectionName;
+
+	public function __construct(Connection $connection, string $connectionName = 'default')
 	{
 		$this->connection = $connection;
+        $this->connectionName = $connectionName;
 	}
 
 	public function getConnection(): Connection
 	{
 		return $this->connection;
 	}
+
+    public function getConnectionName(): string
+    {
+        return $this->connectionName;
+    }
 
 	/**
 	 * @return mixed[]

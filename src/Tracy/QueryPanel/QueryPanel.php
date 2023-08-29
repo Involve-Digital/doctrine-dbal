@@ -54,6 +54,7 @@ class QueryPanel implements IBarPanel
 		$queries = $this->profiler->getQueries();
 		$queriesNum = count($queries);
 		$totalTime = $this->profiler->getTotalTime();
+        $connectionName = $this->profiler->getConnectionName();
 		require __DIR__ . '/templates/panel.phtml';
 
 		return (string) ob_get_clean();

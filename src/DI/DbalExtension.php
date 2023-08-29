@@ -1,4 +1,4 @@
-<?php declare(strict_types = 1);
+<?php declare(strict_types=1);
 
 namespace Nettrine\DBAL\DI;
 
@@ -31,8 +31,29 @@ use stdClass;
 final class DbalExtension extends CompilerExtension
 {
 
+	public const TAG_CONNECTION = 'nettrine.dbal.connection';
+
 	public function getConfigSchema(): Schema
 	{
+		$connectionStructure = Expect::structure([
+			'driver' => Expect::mixed()->required(),
+			'types' => Expect::arrayOf(
+				Expect::structure([
+					'class' => Expect::string()->required(),
+					'commented' => Expect::bool(false),
+				])
+					->before(function ($type) {
+						if (is_string($type)) {
+							return ['class' => $type];
+						}
+
+						return $type;
+					})
+					->castTo('array')
+			),
+			'typesMapping' => Expect::array(),
+		])->otherItems()->castTo('array');
+
 		return Expect::structure([
 			'debug' => Expect::structure([
 				'panel' => Expect::bool(false),
@@ -44,23 +65,10 @@ final class DbalExtension extends CompilerExtension
 				'filterSchemaAssetsExpression' => Expect::string()->nullable(),
 				'autoCommit' => Expect::bool(true),
 			]),
-			'connection' => Expect::structure([
-				'driver' => Expect::mixed()->required(true),
-				'types' => Expect::arrayOf(
-					Expect::structure([
-						'class' => Expect::string()->required(),
-						'commented' => Expect::bool(false),
-					])
-						->before(function ($type) {
-							if (is_string($type)) {
-								return ['class' => $type];
-							}
-							return $type;
-						})
-						->castTo('array')
-				),
-				'typesMapping' => Expect::array(),
-			])->otherItems()->castTo('array'),
+			'connection' => Expect::anyOf(
+				$connectionStructure,
+				Expect::arrayOf($connectionStructure, Expect::string())
+			),
 		]);
 	}
 
@@ -69,31 +77,25 @@ final class DbalExtension extends CompilerExtension
 	 */
 	public function loadConfiguration(): void
 	{
-		$this->loadDoctrineConfiguration();
 		$this->loadConnectionConfiguration();
 	}
 
 	/**
 	 * Register Doctrine Configuration
 	 */
-	public function loadDoctrineConfiguration(): void
+	public function loadDoctrineConfiguration($connectionName): void
 	{
 		$builder = $this->getContainerBuilder();
 		$config = $this->config->configuration;
 		$definitionsHelper = new ExtensionDefinitionsHelper($this->compiler);
 
-		$loggerDefinition = $builder->addDefinition($this->prefix('logger'))
-			->setType(LoggerChain::class)
-			->setAutowired('self');
-
-		$configuration = $builder->addDefinition($this->prefix('configuration'));
-		$configuration->setFactory(Configuration::class)
-			->setAutowired(false)
-			->addSetup('setSQLLogger', [$loggerDefinition]);
+		$loggerDefinition = $builder->addDefinition($this->prefix($connectionName . '.logger'))
+			->setFactory(LoggerChain::class)
+			->setAutowired(false);
 
 		// SqlLogger (append to chain)
 		if ($config->sqlLogger !== null) {
-			$configLoggerName = $this->prefix('logger.config');
+			$configLoggerName = $this->prefix($connectionName . '.logger.config');
 			$configLoggerDefinition = $definitionsHelper->getDefinitionFromConfig($config->sqlLogger, $configLoggerName);
 
 			// If service is extension specific, then disable autowiring
@@ -104,9 +106,14 @@ final class DbalExtension extends CompilerExtension
 			$loggerDefinition->addSetup('addLogger', [$configLoggerDefinition]);
 		}
 
+		$configuration = $builder->addDefinition($this->prefix($connectionName . '.configuration'));
+		$configuration->setFactory(Configuration::class)
+			->setAutowired(false)
+			->addSetup('setSQLLogger', [$loggerDefinition]);
+
 		// ResultCache
 		if ($config->resultCache !== null) {
-			$resultCacheName = $this->prefix('resultCache');
+			$resultCacheName = $this->prefix($connectionName . '.resultCache');
 			$resultCacheDefinition = $definitionsHelper->getDefinitionFromConfig($config->resultCache, $resultCacheName);
 
 			// If service is extension specific, then disable autowiring
@@ -133,7 +140,7 @@ final class DbalExtension extends CompilerExtension
 	public function loadConnectionConfiguration(): void
 	{
 		$builder = $this->getContainerBuilder();
-		$config = $this->config->connection;
+		$connectionConfig = $this->config->connection;
 
 		$builder->addDefinition($this->prefix('eventManager'))
 			->setFactory(ContainerAwareEventManager::class);
@@ -146,39 +153,55 @@ final class DbalExtension extends CompilerExtension
 		}
 
 		$builder->addDefinition($this->prefix('connectionFactory'))
-			->setFactory(ConnectionFactory::class, [$config['types'], $config['typesMapping']]);
+			->setFactory(ConnectionFactory::class, [$connectionConfig['types'], $connectionConfig['typesMapping']]);
 
-		$connectionDef = $builder->addDefinition($this->prefix('connection'))
-			->setFactory(Connection::class)
-			->setFactory('@' . $this->prefix('connectionFactory') . '::createConnection', [
-				$config,
-				'@' . $this->prefix('configuration'),
-				$builder->getDefinitionByType(EventManager::class),
+		if (isset($connectionConfig['dbname'])) {
+			$dbConnectionConfig = ['default' => $connectionConfig];
+		} else {
+			$dbConnectionConfig = array_diff_key($connectionConfig, [
+				'types' => '',
+				'typesMapping' => '',
+				'driver' => '',
 			]);
+		}
 
-		$debugConfig = $this->config->debug;
-		if ($debugConfig->panel) {
-			$connectionDef
-				->addSetup('$profiler = ?', [
-					new Statement(ProfilerLogger::class, [$connectionDef]),
-				]);
+		foreach ($dbConnectionConfig as $name => $emConfig) {
+			$this->loadDoctrineConfiguration($name);
 
-			foreach ($debugConfig->sourcePaths as $path) {
-				$connectionDef->addSetup('$profiler->addPath(?)', [$path]);
-			}
+			$connectionDef = $builder->addDefinition($this->prefix($name . '.connection'))
+				->setFactory(Connection::class)
+				->setFactory('@' . $this->prefix('connectionFactory') . '::createConnection', [
+					$emConfig,
+					'@' . $this->prefix($name . '.configuration'),
+					$builder->getDefinitionByType(EventManager::class),
+				])
+				->addTag(self::TAG_CONNECTION, $name)
+				->setAutowired($name === 'default');
 
-			$connectionDef->addSetup('?->getConfiguration()->getSqlLogger()->addLogger(?)', [
+			$debugConfig = $this->config->debug;
+			if ($debugConfig->panel) {
+				$connectionDef
+					->addSetup('$profiler = ?', [
+						new Statement(ProfilerLogger::class, [$connectionDef, $name]),
+					]);
+
+				foreach ($debugConfig->sourcePaths as $path) {
+					$connectionDef->addSetup('$profiler->addPath(?)', [$path]);
+				}
+
+				$connectionDef->addSetup('?->getConfiguration()->getSqlLogger()->addLogger(?)', [
 					'@self',
 					new PhpLiteral('$profiler'),
 				])
-				->addSetup('@Tracy\Bar::addPanel', [
-					new Statement(QueryPanel::class, [
-						new PhpLiteral('$profiler'),
-					]),
-				])
-				->addSetup('@Tracy\BlueScreen::addPanel', [
-					[DbalBlueScreen::class, 'renderException'],
-				]);
+					->addSetup('@Tracy\Bar::addPanel', [
+						new Statement(QueryPanel::class, [
+							new PhpLiteral('$profiler'),
+						]),
+					])
+					->addSetup('@Tracy\BlueScreen::addPanel', [
+						[DbalBlueScreen::class, 'renderException'],
+					]);
+			}
 		}
 	}
 
@@ -199,7 +222,10 @@ final class DbalExtension extends CompilerExtension
 				'?->addEventListener(?, ?)',
 				[
 					'@self',
-					call_user_func([(new ReflectionClass((string) $serviceDef->getType()))->newInstanceWithoutConstructor(), 'getSubscribedEvents']),
+					call_user_func([
+						(new ReflectionClass((string)$serviceDef->getType()))->newInstanceWithoutConstructor(),
+						'getSubscribedEvents',
+					]),
 					$serviceName, // Intentionally without @ for laziness.
 				]
 			);
