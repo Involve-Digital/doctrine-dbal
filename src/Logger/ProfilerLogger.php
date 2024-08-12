@@ -59,8 +59,17 @@ class ProfilerLogger extends AbstractLogger
 				// Do nothing
 			}
 
-			// Escape % before vsprintf (example: LIKE '%ant%')
+			// Escape % before vsprintf (example: LIKE '%test%')
+			// Do not replace ? when it is used in regex
+			$sql = preg_replace_callback(
+				'/\'[^\']*\?[^\']*\'/',
+				function ($matches) {
+					return str_replace('?', '---#---', $matches[0]);
+				},
+				$sql
+			);
 			$sql = str_replace(['%', '?'], ['%%', '%s'], $sql);
+			$sql = str_replace('---#---', '?', $sql);
 
 			$query = vsprintf(
 				$sql,
