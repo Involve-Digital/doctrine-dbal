@@ -64,12 +64,12 @@ class ProfilerLogger extends AbstractLogger
 			$sql = preg_replace_callback(
 				'/\'[^\']*\?[^\']*\'/',
 				function ($matches) {
-					return str_replace('?', '---#---', $matches[0]);
+					return str_replace(['\?', '?'], ['--dbal-#1-dbal--', '--dbal-#2-dbal--'], $matches[0]);
 				},
 				$sql
 			);
 			$sql = str_replace(['%', '?'], ['%%', '%s'], $sql);
-			$sql = str_replace('---#---', '?', $sql);
+			$sql = str_replace(['--dbal-#1-dbal--', '--dbal-#2-dbal--'], ['\?', '?'], $sql);
 
 			$query = vsprintf(
 				$sql,
